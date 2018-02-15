@@ -2,9 +2,9 @@
 Visualize cluster data from ChIB or WFA experiments in browser.
 Data should be in bed format with cluster id in the forth column. Example:
 ```
-chr16	71461594	71461783	33254	2	+
-chr2	210093832	210093994	33254	8	+
-chr7	128739812	128740098	33010	10	+
+chr16	71461594	71461783	33254
+chr2	210093832	210093994	33254
+chr7	128739812	128740098	33010
 ...
 ```
 
