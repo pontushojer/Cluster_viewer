@@ -1,11 +1,11 @@
 import argparse
 import pandas as pd
 import numpy as np
-from bokeh.io import show
-from bokeh.models import ColumnDataSource, HoverTool, Button, Range1d, TextInput
+from bokeh.models import ColumnDataSource, HoverTool, Button, Range1d, TextInput, Select, FixedTicker, Paragraph
+from bokeh.models import DataTable, NumberFormatter, TableColumn, RangeSlider
 from bokeh.plotting import figure
 from bokeh.layouts import layout
-from bokeh.io import curdoc
+from bokeh.io import curdoc, show
 import sys
 import os
 from time import localtime, strftime
@@ -53,7 +53,7 @@ def genome_file_handling(chromosome_file):
         translate_key[chrom] = current_len
         current_len += genome_lens[chrom]
 
-    return chrom_order, translate_key
+    return chrom_order, translate_key, genome_lens
 
 
 def get_cluster_df(input_bed, translate_key, chrom_order):
@@ -72,11 +72,13 @@ def get_cluster_df(input_bed, translate_key, chrom_order):
                                   int(start),
                                   int(end),
                                   int(start) + translate_key[chrom],
-                                  int(end) + translate_key[chrom])
+                                  int(end) + translate_key[chrom],
+                                  int(end) - int(start),
+                                  (int(end) + int(start))/2 + translate_key[chrom])
 
                 cluster_regions.append(cluster_region)
 
-    return pd.DataFrame(data=cluster_regions, columns=['Cluster', 'Chromosome', 'Start', 'End', 'xmin', 'xmax'])
+    return pd.DataFrame(data=cluster_regions, columns=['Cluster', 'Chromosome', 'Start', 'End', 'xmin', 'xmax', 'width', 'xmid'])
 
 
 def get_cluster_info(dataframe, phasing_threshold=100000, include_fragments=True, include_chromosomes=True,
@@ -133,8 +135,11 @@ def sort_dataframe(dataframe, info_dataframe, sort_type):
         info_dataframe.sort_values(by=sort_type, ascending=ascending).iterrows())}
 
     dataframe['Index'] = pd.Series((np.zeros(len(dataframe)), 1))
+    dataframe['Index_list'] = pd.Series((np.zeros(len(dataframe)), 2))
+
     for i, df_row in dataframe.iterrows():
         dataframe.set_value(i, 'Index', clusters_index[df_row.Cluster])
+        dataframe.set_value(i, 'Index_list', np.array((clusters_index[df_row.Cluster], clusters_index[df_row.Cluster])))
 
     return dataframe.sort_values(by='Index'), clusters_index
 
@@ -146,7 +151,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Reading genome file: ", genome_file_name)
 
-    chrom_order, translate_key = genome_file_handling(genome_file_name)
+    chrom_order, translate_key, chrom_lens = genome_file_handling(genome_file_name)
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Creating cluster dataframe from bed file: ", bed_file_name)
 
@@ -172,88 +177,194 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     #
     # Plotting
     #
-    p = figure(plot_width=1500,
-               plot_height=800,
-               toolbar_location='right')
+    tools = "pan,wheel_zoom,box_zoom,reset,save"
+    p = figure(plot_width=1400,
+               plot_height=750,
+               toolbar_location='above',
+               tools=tools)
 
-    cr = p.square(y='Index',
-                    x='xmin',
-                    line_width=4,
-                    source=source,
-                    fill_alpha=0.3,
-                    line_alpha=0.3,
-                    hover_line_color='red',
-                    hover_fill_color='red',
-                    hover_line_alpha=0.4,
-                    hover_fill_alpha=0.4)
+    cr = p.rect(x='xmid',
+                y='Index',
+                width='width',
+                height=0.5,
+                source=source,
+                fill_alpha=0.3,
+                line_alpha=0.3,
+                line_width=1,
+                fill_color='black',
+                line_color='black',
+                hover_line_color='red',
+                hover_fill_color='red',
+                hover_line_alpha=0.5,
+                hover_fill_alpha=0.5)
 
-    p.add_tools(HoverTool(tooltips=[("Position", "(@Chromosome, @Start, @End)")],
+    # cr = p.square(y='Index',
+    #                 x='xmin',
+    #                 line_width=4,
+    #                 source=source,
+    #                 fill_alpha=0.3,
+    #                 line_alpha=0.3,
+    #                 fill_color='black',
+    #                 line_color='black',
+    #                 hover_line_color='red',
+    #                 hover_fill_color='red',
+    #                 hover_line_alpha=0.5,
+    #                 hover_fill_alpha=0.5)
+
+    hovertool = HoverTool(mode='mouse',
+                          tooltips=[("Position", "(@Chromosome: @Start{0,0} - @End{0,0})")],
                           renderers=[cr],
-                          mode='hline'))
+                          line_policy='next')
 
-    # p.ygrid.grid_line_color = 'black'
-    # p.ygrid.grid_line_width = 15
-    # p.ygrid.grid_line_alpha = 0.1
-    # p.ygrid = list(range(0, 20))
+    p.add_tools(hovertool)
 
+    p.ygrid.grid_line_color = 'blue'
+    p.ygrid.grid_line_width = 15
+    p.ygrid.grid_line_alpha = 0.1
+    p.ygrid.ticker = FixedTicker(ticks=np.arange(0, len(cluster_index), 1))
     p.xaxis.axis_label = None
     p.yaxis.axis_label = 'Cluster id'
 
-    p.y_range = Range1d(0, 20)
+    p.y_range = Range1d(-1, 20)
     p.yaxis.ticker = list(range(0, len(cluster_index)))
-    p.yaxis.major_label_overrides = {str(i): '#' + str(i) + ' = ' + str(key).rjust(8) for key, i in cluster_index.items() if i in range(0, len(cluster_index))}
+    p.yaxis.major_label_overrides = {str(i): '#' + str(i).ljust(4) + ' = ' + str(key).rjust(8)
+                                     for key, i in cluster_index.items() if i in range(0, len(cluster_index))}
 
     p.outline_line_color = None
 
     p.xaxis.ticker = [translate_key[chrom] for chrom in chrom_order]
     p.xaxis.major_label_overrides = {translate_key[chrom]: chrom for chrom in chrom_order}
-    p.xaxis.major_label_orientation = 3.14/2
+    p.xaxis.major_label_orientation = 3.14/4
 
     p.xgrid.grid_line_color = None
 
     p.title.text = "Cluster overview " #+ str(current_pos) + ' - ' + str(current_pos + 20) + ' of total (' + str(len(cluster_index)) + ')'
 
+    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Plotting figure.")
+
     #show(p)
+    #sys.exit()
 
-    # button_fwd = Button(label='Forward 20', button_type='success')
-    # button_rev = Button(label='Reverse 20', button_type='success')
-    #
-    # def update_y_axis(change, cluster_index):
-    #     global current_pos
-    #     position = current_pos + change
-    #     if 0 <= position:
-    #         p.y_range.start += change
-    #         p.y_range.end += change
-    #         p.yaxis.ticker = list(range(position-1, position + 20))
-    #         p.yaxis.major_label_overrides = {str(i): '#' + str(i) + ' = ' + str(key).rjust(8) for key, i in cluster_index.items() if
-    #                                          i in range(position-1, position + 20)}
-    #         current_pos = position
-    #         p.title.text = "Cluster overview " + str(current_pos) + ' - ' + str(current_pos + 20) + ' of total (' + str(
-    #             len(cluster_index)) + ')'
-    #
-    #     print(current_pos)
-    #
-    # def cb_fwd():
-    #     print("FORWARD")
-    #     update_y_axis(20, cluster_index)
-    #
-    # def cb_rev():
-    #     print("REVERSE")
-    #     update_y_axis(-20, cluster_index)
-    #
-    # button_fwd.on_click(cb_fwd)
-    # button_rev.on_click(cb_rev)
-    #
-    # curdoc().add_root(layout([[p], [button_fwd, button_rev]]))
-    index = TextInput(value="O", title="Range index:")
+    y_range_index = TextInput(value="0", title="Range index:")
 
-    def update_range(attr, old, new):
-        p.y_range.start = int(index.value)
-        p.y_range.end = int(index.value) + 20
+    def update_y_range(attr, old, new):
+        p.y_range.start = int(y_range_index.value) - 1
+        p.y_range.end = int(y_range_index.value) + 20
 
-    index.on_change('value', update_range)
+    y_range_index.on_change('value', update_y_range)
 
-    curdoc().add_root(layout([[p], [index]]))
+    chr_options = ['All'] + chrom_order
+
+    chr_select = Select(value='All', title='Select chromosome', options=chr_options)
+
+    def update_chr(attr, old, new):
+        if chr_select.value == 'All':
+            p.x_range.start = 0
+            p.x_range.end = sum(chrom_lens.values())
+
+            p.xaxis.ticker = [translate_key[chrom] for chrom in chrom_order]
+            p.xaxis.major_label_overrides = {translate_key[chrom]: chrom for chrom in chrom_order}
+            p.xaxis.axis_label = None
+
+        else:
+            p.x_range.start = translate_key[chr_select.value]
+            p.x_range.end = translate_key[chr_select.value] + chrom_lens[chr_select.value]
+
+            step = int(10 ** (len(str(chrom_lens[chr_select.value]))-2))
+            ticks = list(range(p.x_range.start, p.x_range.end, step))
+            tick_labels = list(range(0, chrom_lens[chr_select.value], step))
+
+            p.xaxis.ticker = ticks
+            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
+            p.xaxis.axis_label = chr_select.value
+
+        x_range_start.value = str(p.x_range.start)
+        x_range_end.value = str(p.x_range.end)
+
+
+    chr_select.on_change('value', update_chr)
+
+
+    x_range_start = TextInput(value='0', title='Start x:')
+    x_range_end = TextInput(value=str(sum(chrom_lens.values())), title='End x:')
+
+    def update_x_range(attr, old, new):
+        if chr_select.value == 'All':
+            p.x_range.start = int(x_range_start.value)
+            p.x_range.end = int(x_range_end.value)
+        else:
+            p.x_range.start = int(x_range_start.value)
+            p.x_range.end = int(x_range_end.value)
+            step = int(10 ** (len(str(p.x_range.end - p.x_range.start))-2))
+            ticks = list(range(p.x_range.start, p.x_range.end, step))
+            tick_labels = list(range(p.x_range.start - translate_key[chr_select.value],
+                                     p.x_range.end - translate_key[chr_select.value], step))
+            p.xaxis.ticker = ticks
+            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
+
+    x_range_start.on_change('value', update_x_range)
+    x_range_end.on_change('value', update_x_range)
+
+    zoom_in = Button(label='ZOOM IN', button_type='success')
+    zoom_out = Button(label='ZOOM OUT', button_type='success')
+
+    def update_zoom_in():
+        diff = p.x_range.end - p.x_range.start
+        p.x_range.start += int(diff/4)
+        p.x_range.end -= int(diff/4)
+        x_range_start.value = str(p.x_range.start)
+        x_range_end.value = str(p.x_range.end)
+
+    def update_zoom_out():
+        diff = p.x_range.end - p.x_range.start
+        if p.x_range.start - int(diff / 4) > 0:
+            p.x_range.start -= int(diff / 4)
+        else:
+            p.x_range.start = 0
+        if p.x_range.end + int(diff / 4) < sum(chrom_lens.values()):
+            p.x_range.end += int(diff / 4)
+        else:
+            p.x_range.end = sum(chrom_lens.values())
+
+        x_range_start.value = str(p.x_range.start)
+        x_range_end.value = str(p.x_range.end)
+        x_range_start.callback()
+        x_range_end.callback()
+
+    zoom_in.on_click(update_zoom_in)
+    zoom_out.on_click(update_zoom_out)
+
+    text = Paragraph(text='Go to Github at https://github.com/pontushojer/Cluster_viewer.', width=1300, height=20)
+
+    start_cluster = cluster_df_sorted[cluster_df_sorted.Index == 0].Cluster.values[0]
+
+    cluster_data = cluster_df_sorted[cluster_df_sorted.Cluster == start_cluster]
+
+    cluster_source = ColumnDataSource(cluster_data)
+
+    columns = [TableColumn(field='Chromosome', title='Chrom'),
+               TableColumn(field='Start', title='Start', formatter=NumberFormatter()),
+               TableColumn(field='End', title='End', formatter=NumberFormatter())
+               ]
+    data_table = DataTable(source=cluster_source, columns=columns, width=250, height=750, row_headers=False,
+                           fit_columns=True, sortable=True, editable=False)
+
+    cluster_select = TextInput(value=start_cluster, title='Cluster:', width=100)
+
+    def update_cluster_info(attr, old, new):
+        if int(cluster_select.value) in cluster_index.keys():
+            new_data = cluster_df_sorted[cluster_df_sorted.Cluster == cluster_select.value]
+            cluster_source.data = {
+                'Chromosome': new_data.Chromosome,
+                'Start': new_data.Start,
+                'End': new_data.End
+            }
+        else:
+            print('Cluster ', cluster_select.value, 'not in data')
+
+    cluster_select.on_change('value', update_cluster_info)
+
+    curdoc().add_root(layout([[text], [[p], data_table], [zoom_in, zoom_out],[y_range_index, chr_select, x_range_start, x_range_end, cluster_select]]))
     curdoc().title = "Test"
 
 #
@@ -282,15 +393,17 @@ else:
 
 print('CURRENT FILE = ', bed_file)
 
-print('AVAILABLE SORT OPTIONS:')
-print('-'*30)
-options = ['Cluster', 'Fragments', 'Chromosomes', 'Phased_regions']
-for nr, option in enumerate(options):
-    print(nr, ':', option)
-print('-'*30)
 
-option_index = int(input('Give selected sort option index:'))
-sorting_type = options[option_index]
+# print('AVAILABLE SORT OPTIONS:')
+# print('-'*30)
+# options = ['Cluster', 'Fragments', 'Chromosomes', 'Phased_regions']
+# for nr, option in enumerate(options):
+#     print(nr, ':', option)
+# print('-'*30)
+#
+# option_index = int(input('Give selected sort option index:'))
+# sorting_type = options[option_index]
+sorting_type = 'Cluster'
 
 # Start main program
 main(bed_file_name=bed_file, genome_file_name=genome_file, sort_cluster_type=sorting_type)

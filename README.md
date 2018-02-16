@@ -24,7 +24,10 @@ Alternatively the following command can be used to input data directly.
 bokeh serve . --show --arg /path/to/bed_file
 ```
 
-Copy the URL e.g (http://localhost:5006/Cluster_viewer or similar) into your browser.
+To manuver in site either:
+  (1) select start of range in text filed
+  (2) mouse-drag on y axis.
 
+Mouse-over position to get full cluster iformation.
 Good to go!!
 
