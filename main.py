@@ -5,6 +5,7 @@ from bokeh.models import ColumnDataSource, HoverTool, Button, Range1d, TextInput
 from bokeh.models import DataTable, NumberFormatter, TableColumn, RangeSlider
 from bokeh.plotting import figure
 from bokeh.layouts import layout
+from bokeh.models.callbacks import CustomJS
 from bokeh.io import curdoc, show
 import sys
 import os
@@ -78,11 +79,11 @@ def get_cluster_df(input_bed, translate_key, chrom_order):
 
                 cluster_regions.append(cluster_region)
 
-    return pd.DataFrame(data=cluster_regions, columns=['Cluster', 'Chromosome', 'Start', 'End', 'xmin', 'xmax', 'width', 'xmid'])
+    return pd.DataFrame(data=cluster_regions, columns=['Cluster', 'Chromosome', 'Start', 'End', 'xmin', 'xmax', 'width',
+                                                       'xmid'])
 
 
-def get_cluster_info(dataframe, phasing_threshold=100000, include_fragments=True, include_chromosomes=True,
-                     include_phasing=True):
+def get_cluster_info(dataframe, sort_type, phasing_threshold=100000):
     """
     Get basic cluster information from dataframe
     """
@@ -94,18 +95,14 @@ def get_cluster_info(dataframe, phasing_threshold=100000, include_fragments=True
         cluster_dataframe = dataframe[dataframe.Cluster == cluster]
 
         # Get number of fragments
-        fragments = 0
-        if include_fragments:
-            fragments = len(cluster_dataframe)
+        fragments = len(cluster_dataframe)
 
         # Get number of chromosomes
-        chromosomes = 0
-        if include_chromosomes:
-            chromosomes = len(cluster_dataframe.Chromosome.unique())
+        chromosomes = len(cluster_dataframe.Chromosome.unique())
 
         # Get number of phased reads i.e pairs of neigbouring fragments within threshold
         phasing = 0
-        if include_phasing:
+        if sort_type == 'Phased_regions':
             if fragments > 1:
                 for chromosome in cluster_dataframe.Chromosome.unique():
                     fragment_start_values = cluster_dataframe[cluster_dataframe.Chromosome == chromosome].Start
@@ -115,12 +112,18 @@ def get_cluster_info(dataframe, phasing_threshold=100000, include_fragments=True
                                 phasing += 1
 
         # Store as tuple
-        data = (cluster, fragments, chromosomes, phasing)
+        if sort_type == 'Phased_regions':
+            data = (cluster, fragments, chromosomes, phasing)
+        else:
+            data = (cluster, fragments, chromosomes)
 
         # Apped to list
         cluster_data.append(data)
 
-    return pd.DataFrame(data=cluster_data, columns=['Cluster', 'Fragments', 'Chromosomes', 'Phased_regions'])
+    if sort_type == 'Phased_regions':
+        return pd.DataFrame(data=cluster_data, columns=['Cluster', 'Chromosomes', 'Fragments', 'Phased_regions'])
+    else:
+        return pd.DataFrame(data=cluster_data, columns=['Cluster', 'Chromosomes', 'Fragments'])
 
 
 def sort_dataframe(dataframe, info_dataframe, sort_type):
@@ -145,9 +148,11 @@ def sort_dataframe(dataframe, info_dataframe, sort_type):
 
 
 def main(bed_file_name, genome_file_name, sort_cluster_type):
-    #
+    ########################################################
     # Get initial information from bed file and genome file
-    #
+    ########################################################
+
+
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Reading genome file: ", genome_file_name)
 
@@ -159,64 +164,68 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Collecting cluster info to dataframe")
 
-    cluster_info = get_cluster_info(cluster_df, sort_cluster_type,
-                                    include_chromosomes=(sort_cluster_type == 'Chromosomes'),
-                                    include_fragments=(sort_cluster_type == 'Fragments'),
-                                    include_phasing=(sort_cluster_type == 'Phased_regions'))
+    # Get informatio about cluster based on sort type. Will only gather phasing information relevant to sort.
+    cluster_info = get_cluster_info(cluster_df, sort_cluster_type)
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Sorting cluster dataframe based on: ", sort_cluster_type)
 
     cluster_df_sorted, cluster_index = sort_dataframe(cluster_df, cluster_info, sort_cluster_type)
 
+    # Convert cluster type to string to enable factorial representation.
     cluster_df_sorted.Cluster = cluster_df_sorted.Cluster.astype(str)
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Setting up data source for plotting.")
 
     source = ColumnDataSource(cluster_df_sorted)
 
-    #
+    ###########
     # Plotting
-    #
+    ###########
+    min_visable_range = 5000  # To power requirements
+    max_range = sum(chrom_lens.values())
     tools = "pan,wheel_zoom,box_zoom,reset,save"
-    p = figure(plot_width=1400,
+
+    p = figure(x_range=(0, max_range),
+               plot_width=1400,
                plot_height=750,
                toolbar_location='above',
                tools=tools)
 
-    cr = p.rect(x='xmid',
-                y='Index',
-                width='width',
-                height=0.5,
-                source=source,
-                fill_alpha=0.3,
-                line_alpha=0.3,
-                line_width=1,
-                fill_color='black',
-                line_color='black',
-                hover_line_color='red',
-                hover_fill_color='red',
-                hover_line_alpha=0.5,
-                hover_fill_alpha=0.5)
+    cluster_bar = p.rect(x=max_range/2,
+                         width=max_range,
+                         height=0.5,
+                         y=list(cluster_index.values()),
+                         fill_alpha=0.01,
+                         line_alpha=0.01,
+                         hover_line_color='red',
+                         hover_fill_color='red',
+                         hover_line_alpha=0.1,
+                         hover_fill_alpha=0.1)
 
-    # cr = p.square(y='Index',
-    #                 x='xmin',
-    #                 line_width=4,
-    #                 source=source,
-    #                 fill_alpha=0.3,
-    #                 line_alpha=0.3,
-    #                 fill_color='black',
-    #                 line_color='black',
-    #                 hover_line_color='red',
-    #                 hover_fill_color='red',
-    #                 hover_line_alpha=0.5,
-    #                 hover_fill_alpha=0.5)
+    glyph = p.rect(x='xmid',
+                    y='Index',
+                    width='width',
+                    height=0.5,
+                    source=source,
+                    fill_alpha=0.3,
+                    line_alpha=0.3,
+                    line_width=1,
+                    fill_color='black',
+                    line_color='black',
+                    hover_line_color='red',
+                    hover_fill_color='red',
+                    hover_line_alpha=0.5,
+                    hover_fill_alpha=0.5)
 
     hovertool = HoverTool(mode='mouse',
                           tooltips=[("Position", "(@Chromosome: @Start{0,0} - @End{0,0})")],
-                          renderers=[cr],
+                          renderers=[glyph],
                           line_policy='next')
 
-    p.add_tools(hovertool)
+    hovertool2 = HoverTool(mode='mouse', tooltips=None,
+                           renderers=[cluster_bar])
+
+    p.add_tools(hovertool, hovertool2)
 
     p.ygrid.grid_line_color = 'blue'
     p.ygrid.grid_line_width = 15
@@ -227,7 +236,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     p.y_range = Range1d(-1, 20)
     p.yaxis.ticker = list(range(0, len(cluster_index)))
-    p.yaxis.major_label_overrides = {str(i): '#' + str(i).ljust(4) + ' = ' + str(key).rjust(8)
+    p.yaxis.major_label_overrides = {str(i): '#' + str(key) + '(' + str(i).rjust(3) + ')'
                                      for key, i in cluster_index.items() if i in range(0, len(cluster_index))}
 
     p.outline_line_color = None
@@ -238,13 +247,42 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     p.xgrid.grid_line_color = None
 
-    p.title.text = "Cluster overview " #+ str(current_pos) + ' - ' + str(current_pos + 20) + ' of total (' + str(len(cluster_index)) + ')'
+    #p.title.text = "Cluster overview " #+ str(current_pos) + ' - ' + str(current_pos + 20) + ' of total (' + str(len(cluster_index)) + ')'
 
     print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Plotting figure.")
 
     #show(p)
     #sys.exit()
 
+    ###########################
+    # Interactivity section
+    #########################
+
+    def update_ticks(chrom, start, end):
+        if chrom == 'All':
+            # Ticks displayed
+            p.xaxis.ticker = [translate_key[chrom] for chrom in chrom_order]
+            p.xaxis.major_label_overrides = {translate_key[chrom]: chrom for chrom in chrom_order}
+            p.xaxis.axis_label = None
+        else:
+            # Ticker setup
+            window = end - start
+            step = int(float(0.5 * 10 ** (len(str(window)) - 1)))
+            ticks = list(range(translate_key[chrom],
+                               translate_key[chrom] + chrom_lens[chrom], step))
+            tick_labels = list(range(0, chrom_lens[chrom], step))
+
+            # Ticks displayed
+            p.xaxis.ticker = ticks
+            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
+            p.xaxis.axis_label = chrom
+
+        x_range_start.value = str(start)
+        x_range_end.value = str(end)
+
+    #
+    # Select from which index to display clusters.
+    #
     y_range_index = TextInput(value="0", title="Range index:")
 
     def update_y_range(attr, old, new):
@@ -253,90 +291,102 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     y_range_index.on_change('value', update_y_range)
 
+    #
+    # Select which chromosome to display, All refers to base state with all chroms visable
+    #
     chr_options = ['All'] + chrom_order
-
     chr_select = Select(value='All', title='Select chromosome', options=chr_options)
 
     def update_chr(attr, old, new):
         if chr_select.value == 'All':
+            # Range displayed
             p.x_range.start = 0
-            p.x_range.end = sum(chrom_lens.values())
-
-            p.xaxis.ticker = [translate_key[chrom] for chrom in chrom_order]
-            p.xaxis.major_label_overrides = {translate_key[chrom]: chrom for chrom in chrom_order}
-            p.xaxis.axis_label = None
+            p.x_range.end = max_range
 
         else:
+            # Range displayed
             p.x_range.start = translate_key[chr_select.value]
             p.x_range.end = translate_key[chr_select.value] + chrom_lens[chr_select.value]
 
-            step = int(10 ** (len(str(chrom_lens[chr_select.value]))-2))
-            ticks = list(range(p.x_range.start, p.x_range.end, step))
-            tick_labels = list(range(0, chrom_lens[chr_select.value], step))
-
-            p.xaxis.ticker = ticks
-            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
-            p.xaxis.axis_label = chr_select.value
-
-        x_range_start.value = str(p.x_range.start)
-        x_range_end.value = str(p.x_range.end)
-
+        update_ticks(chr_select.value, p.x_range.start, p.x_range.end)
 
     chr_select.on_change('value', update_chr)
 
-
+    #
+    # Select which regions to display based on input coordinates
+    #
     x_range_start = TextInput(value='0', title='Start x:')
-    x_range_end = TextInput(value=str(sum(chrom_lens.values())), title='End x:')
+    x_range_end = TextInput(value=str(max_range), title='End x:')
 
     def update_x_range(attr, old, new):
-        if chr_select.value == 'All':
-            p.x_range.start = int(x_range_start.value)
-            p.x_range.end = int(x_range_end.value)
-        else:
-            p.x_range.start = int(x_range_start.value)
-            p.x_range.end = int(x_range_end.value)
-            step = int(10 ** (len(str(p.x_range.end - p.x_range.start))-2))
-            ticks = list(range(p.x_range.start, p.x_range.end, step))
-            tick_labels = list(range(p.x_range.start - translate_key[chr_select.value],
-                                     p.x_range.end - translate_key[chr_select.value], step))
-            p.xaxis.ticker = ticks
-            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
+        if int(x_range_end.value) - int(x_range_start.value) > min_visable_range:
+            # Range displayed
+            p.x_range.start = int(float(x_range_start.value))
+            p.x_range.end = int(float(x_range_end.value))
 
+            if chr_select.value != 'All':
+                update_ticks(chr_select.value, p.x_range.start, p.x_range.end)
+        else:
+            print('Zoom in limit reached.')
     x_range_start.on_change('value', update_x_range)
     x_range_end.on_change('value', update_x_range)
 
+    #
+    # Zoom in button
+    #
     zoom_in = Button(label='ZOOM IN', button_type='success')
-    zoom_out = Button(label='ZOOM OUT', button_type='success')
 
     def update_zoom_in():
         diff = p.x_range.end - p.x_range.start
-        p.x_range.start += int(diff/4)
-        p.x_range.end -= int(diff/4)
-        x_range_start.value = str(p.x_range.start)
-        x_range_end.value = str(p.x_range.end)
+        if diff/2 > min_visable_range:
+            p.x_range.start += int(float(diff/4))
+            p.x_range.end -= int(float(diff / 4))
+            update_ticks(chr_select.value, p.x_range.start, p.x_range.end)
+        else:
+            print('Zoom in limit reached.')
+
+    zoom_in.on_click(update_zoom_in)
+
+    #
+    # Zoom out button
+    #
+    zoom_out = Button(label='ZOOM OUT', button_type='success')
 
     def update_zoom_out():
         diff = p.x_range.end - p.x_range.start
-        if p.x_range.start - int(diff / 4) > 0:
-            p.x_range.start -= int(diff / 4)
-        else:
-            p.x_range.start = 0
-        if p.x_range.end + int(diff / 4) < sum(chrom_lens.values()):
-            p.x_range.end += int(diff / 4)
-        else:
-            p.x_range.end = sum(chrom_lens.values())
+        chromosome = chr_select.value
 
-        x_range_start.value = str(p.x_range.start)
-        x_range_end.value = str(p.x_range.end)
-        x_range_start.callback()
-        x_range_end.callback()
+        if p.x_range.start - int(float(diff / 4)) > 0:
+            p.x_range.start -= int(float(diff / 4))
+        else:
+            if chromosome == 'All':
+                p.x_range.start = 0
+            else:
+                p.x_range.start = translate_key[chromosome]
 
-    zoom_in.on_click(update_zoom_in)
+        if chromosome == 'All':
+            if p.x_range.end + int(float(diff / 4)) < max_range:
+                p.x_range.end += int(float(diff / 4))
+            else:
+                p.x_range.end = max_range
+
+        else:
+            if p.x_range.end + int(float(diff / 4)) < translate_key[chromosome] + chrom_lens[chromosome]:
+                p.x_range.end += int(float(diff / 4))
+            else:
+                p.x_range.end = translate_key[chromosome] + chrom_lens[chromosome]
+
+        update_ticks(chromosome, p.x_range.start, p.x_range.end)
+
     zoom_out.on_click(update_zoom_out)
 
-    text = Paragraph(text='Go to Github at https://github.com/pontushojer/Cluster_viewer.', width=1300, height=20)
+    #
+    # Cluster specific table + info
+    #
 
     start_cluster = cluster_df_sorted[cluster_df_sorted.Index == 0].Cluster.values[0]
+
+    text = Paragraph(text=str(start_cluster), width=250, height=10)
 
     cluster_data = cluster_df_sorted[cluster_df_sorted.Cluster == start_cluster]
 
@@ -344,8 +394,8 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     columns = [TableColumn(field='Chromosome', title='Chrom'),
                TableColumn(field='Start', title='Start', formatter=NumberFormatter()),
-               TableColumn(field='End', title='End', formatter=NumberFormatter())
-               ]
+               TableColumn(field='End', title='End', formatter=NumberFormatter())]
+
     data_table = DataTable(source=cluster_source, columns=columns, width=250, height=750, row_headers=False,
                            fit_columns=True, sortable=True, editable=False)
 
@@ -353,23 +403,29 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     def update_cluster_info(attr, old, new):
         if int(cluster_select.value) in cluster_index.keys():
+            text.text = 'Cluster: ' + cluster_select.value
             new_data = cluster_df_sorted[cluster_df_sorted.Cluster == cluster_select.value]
             cluster_source.data = {
                 'Chromosome': new_data.Chromosome,
                 'Start': new_data.Start,
-                'End': new_data.End
-            }
+                'End': new_data.End}
         else:
+            text.text = 'Cluster: ' + cluster_select.value + ' not available!'
             print('Cluster ', cluster_select.value, 'not in data')
 
     cluster_select.on_change('value', update_cluster_info)
 
-    curdoc().add_root(layout([[text], [[p], data_table], [zoom_in, zoom_out],[y_range_index, chr_select, x_range_start, x_range_end, cluster_select]]))
-    curdoc().title = "Test"
+    #
+    # HTML Document setup
+    #
+    curdoc().add_root(layout([[[p], [text, data_table]],
+                              [zoom_in, zoom_out],
+                              [y_range_index, chr_select, x_range_start, x_range_end, cluster_select]]))
+    curdoc().title = "CLUSTER VIEWER"
 
-#
+#################
 # Startup options
-#
+#################
 
 # Genome file
 genome_file = 'data/hg38.genome'
