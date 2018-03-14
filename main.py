@@ -2,10 +2,9 @@ import argparse
 import pandas as pd
 import numpy as np
 from bokeh.models import ColumnDataSource, HoverTool, Button, Range1d, TextInput, Select, FixedTicker, Paragraph
-from bokeh.models import DataTable, NumberFormatter, TableColumn, RangeSlider
+from bokeh.models import DataTable, NumberFormatter, TableColumn
 from bokeh.plotting import figure
 from bokeh.layouts import layout
-from bokeh.models.callbacks import CustomJS
 from bokeh.io import curdoc, show
 import sys
 import os
@@ -83,14 +82,180 @@ def get_cluster_df(input_bed, translate_key, chrom_order):
                                                        'xmid'])
 
 
+def neared_cluster_bin(dataframe, chroms, chroms_lenghts, bin_size=1000000):
+    clusters = list(dataframe.Cluster.unique())
+    translate_key = {}
+    bins = 0
+
+    for nr, chrom in enumerate(chroms):
+        chrom_bins = int(chroms_lenghts[chrom] / bin_size + 1)
+        translate_key[chrom] = bins
+        bins += chrom_bins
+
+    print(get_time(), 'Creating matrix for clustering')
+    cluster_dict = {}
+    bin_matrix = []
+    count = 0
+    for cluster in clusters:
+
+        cluster_dataframe = dataframe[dataframe.Cluster == cluster]
+        bin_array = [0] * bins
+        for i, row in cluster_dataframe.iterrows():
+            cluster_bin = translate_key[row.Chromosome] + int(row.Start / bin_size)
+            bin_array[cluster_bin] += 1
+
+        array_norm = np.array([bin_freq / sum(bin_array) for bin_freq in bin_array])
+        bin_matrix.append(array_norm)
+        cluster_dict[cluster] = count
+
+        count += 1
+        if count % 1000 == 0:
+            print(get_time(), count, 'clusters processed.')
+
+    bin_matrix = np.array(bin_matrix)
+
+    import scipy.cluster.hierarchy as hcluster
+
+    hclusters = hcluster.fclusterdata(bin_matrix, 0.1, criterion='distance', metric='euclidean')
+    hclsts = [(i, hclst) for i, hclst in enumerate(hclusters)]
+    clusters_index = {}
+
+    for nr, (i, hclst) in enumerate(sorted(hclsts, key=lambda x: list(hclusters).count(x[1]), reverse=True)):
+        clusters_index[clusters[i]] = nr
+
+
+
+    # nbrs = NearestNeighbors(n_neighbors=5, algorithm='ball_tree').fit(bin_matrix)
+    # dist, indices = nbrs.kneighbors(bin_matrix)
+
+    # for i, index_list in enumerate(indices):
+    #     if i != index_list[0]:
+
+    # print(dist)
+    # print(indices)
+
+    #
+    # clusters_index = {}
+    # cluster = clusters.pop()
+    # clusters_index[cluster] = 0
+    # index = 0
+    #
+    # print(get_time(), 'Finding nearest neighbour.')
+    # iter = 0
+    # while len(clusters) > 1:
+    #     iter += 1
+    #     index += 1
+    #     row = cluster_dict[cluster]
+    #     dist = 1
+    #     neighbour = None
+    #
+    #     for comp_cluster in clusters:
+    #         comp_row = cluster_dict[comp_cluster]
+    #         comp_dist = np.linalg.norm(row - comp_row)
+    #
+    #         if comp_dist == 0:
+    #             neighbour = comp_cluster
+    #             break
+    #         elif comp_dist < dist:
+    #             dist = comp_dist
+    #             neighbour = comp_cluster
+    #
+    #     if neighbour:
+    #         if dist < 0.01:
+    #             clusters_index[neighbour] = index
+    #
+    #             cluster = neighbour
+    #             clusters.remove(cluster)
+    #         else:
+    #             clusters.append(cluster)
+    #             cluster = clusters.pop(randint(0, len(clusters) - 1))
+    #             index -= 1
+    #
+    #     if iter % 1000 == 0:
+    #         print(get_time(), iter, 'iteraction. Clusters remaining: ', len(clusters), 'Current cluster= ', cluster)
+    #
+    # clusters_index[clusters[0]] = index + 1
+
+    dataframe['Index'] = pd.Series((np.zeros(len(dataframe)), 1))
+
+    for i, df_row in dataframe.iterrows():
+        # print(df_row.Cluster)
+        try:
+            dataframe.set_value(i, 'Index', clusters_index[df_row.Cluster])
+        except KeyError:
+            print('Keyerror', df_row.Cluster)
+            print('In clusters', df_row.Cluster in list(dataframe.Cluster.unique()))
+            print('In clusters index', df_row.Cluster in clusters_index.keys())
+    return dataframe.sort_values(by='Index'), clusters_index
+
+
+def neared_cluster_chrom(dataframe, chroms):
+    clusters = list(dataframe.Cluster.unique())
+    cluster_dict = {}
+
+    for cluster in clusters:
+        chrom_data = [0] * len(chroms)
+        cluster_chroms = dataframe[dataframe.Cluster == cluster].Chromosome.values
+
+        for chrom in cluster_chroms:
+            chrom_data[chrom_number(chrom)-1] += 1
+
+        chrom_data_norm = np.array([data / sum(chrom_data) for data in chrom_data])
+        cluster_dict[cluster] = chrom_data_norm
+
+    clusters_index = {}
+    cluster = clusters.pop()
+    clusters_index[cluster] = 0
+    index = 0
+
+    while len(clusters) > 1:
+        index += 1
+        row = cluster_dict[cluster]
+        dist = 1
+        neighbour = None
+
+        for comp_cluster in clusters:
+            comp_row = cluster_dict[comp_cluster]
+            comp_dist = np.linalg.norm(row - comp_row)
+
+            if comp_dist == 0:
+                neighbour = comp_cluster
+                break
+            elif comp_dist < dist:
+                dist = comp_dist
+                neighbour = comp_cluster
+
+        if neighbour:
+            clusters_index[neighbour] = index
+
+            cluster = neighbour
+            clusters.remove(cluster)
+        else:
+            print(1, cluster)
+    clusters_index[clusters[0]] = index + 1
+
+    dataframe['Index'] = pd.Series((np.zeros(len(dataframe)), 1))
+
+    for i, df_row in dataframe.iterrows():
+        #print(df_row.Cluster)
+        try:
+            dataframe.set_value(i, 'Index', clusters_index[df_row.Cluster])
+        except KeyError:
+            print('Keyerror', df_row.Cluster)
+            print('In clusters', df_row.Cluster in list(dataframe.Cluster.unique()))
+            print('In clusters index', df_row.Cluster in clusters_index.keys())
+    return dataframe.sort_values(by='Index'), clusters_index
+
+
 def get_cluster_info(dataframe, sort_type, phasing_threshold=100000):
     """
     Get basic cluster information from dataframe
     """
 
     cluster_data = []
+    clusters = dataframe.Cluster.unique()
     # Loop over each cluster
-    for cluster in dataframe.Cluster.unique():
+    for cluster in clusters:
         # Extract dataframe for cluster
         cluster_dataframe = dataframe[dataframe.Cluster == cluster]
 
@@ -113,10 +278,9 @@ def get_cluster_info(dataframe, sort_type, phasing_threshold=100000):
 
         # Store as tuple
         if sort_type == 'Phased_regions':
-            data = (cluster, fragments, chromosomes, phasing)
+            data = (cluster, chromosomes, fragments, phasing)
         else:
-            data = (cluster, fragments, chromosomes)
-
+            data = (cluster, chromosomes, fragments)
         # Apped to list
         cluster_data.append(data)
 
@@ -147,42 +311,50 @@ def sort_dataframe(dataframe, info_dataframe, sort_type):
     return dataframe.sort_values(by='Index'), clusters_index
 
 
+def get_time():
+    return strftime("%Y-%m-%d %H:%M:%S ", localtime())
+
+
 def main(bed_file_name, genome_file_name, sort_cluster_type):
     ########################################################
     # Get initial information from bed file and genome file
     ########################################################
 
-
-
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Reading genome file: ", genome_file_name)
+    print(get_time(), "Reading genome file: ", genome_file_name)
 
     chrom_order, translate_key, chrom_lens = genome_file_handling(genome_file_name)
 
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Creating cluster dataframe from bed file: ", bed_file_name)
+    print(get_time(), "Creating cluster dataframe from bed file: ", bed_file_name)
 
     cluster_df = get_cluster_df(bed_file_name, translate_key, chrom_order)
 
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Collecting cluster info to dataframe")
+    print(get_time(), "Collecting cluster info to dataframe")
 
     # Get informatio about cluster based on sort type. Will only gather phasing information relevant to sort.
     cluster_info = get_cluster_info(cluster_df, sort_cluster_type)
 
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Sorting cluster dataframe based on: ", sort_cluster_type)
+    print(get_time(), "Sorting cluster dataframe based on: ", sort_cluster_type)
 
-    cluster_df_sorted, cluster_index = sort_dataframe(cluster_df, cluster_info, sort_cluster_type)
+    if sorting_type == 'Neighbour':
+        cluster_df_sorted, cluster_index = neared_cluster_bin(cluster_df, chrom_order, chrom_lens, bin_size=1000000)
+        #cluster_df_sorted, cluster_index = neared_cluster_chrom(cluster_df, chrom_order)
+    else:
+        cluster_df_sorted, cluster_index = sort_dataframe(cluster_df, cluster_info, sort_cluster_type)
 
     # Convert cluster type to string to enable factorial representation.
     cluster_df_sorted.Cluster = cluster_df_sorted.Cluster.astype(str)
 
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Setting up data source for plotting.")
+    print(get_time(), "Setting up data source for plotting.")
 
     source = ColumnDataSource(cluster_df_sorted)
 
     ###########
     # Plotting
     ###########
-    min_visable_range = 5000  # To power requirements
+    min_visable_range = 500  # To power requirements
     max_range = sum(chrom_lens.values())
+    visable_clusters = 20
+
     tools = "pan,wheel_zoom,box_zoom,reset,save"
 
     p = figure(x_range=(0, max_range),
@@ -209,7 +381,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
                     source=source,
                     fill_alpha=0.3,
                     line_alpha=0.3,
-                    line_width=1,
+                    line_width=2,
                     fill_color='black',
                     line_color='black',
                     hover_line_color='red',
@@ -234,7 +406,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     p.xaxis.axis_label = None
     p.yaxis.axis_label = 'Cluster id'
 
-    p.y_range = Range1d(-1, 20)
+    p.y_range = Range1d(-1, visable_clusters)
     p.yaxis.ticker = list(range(0, len(cluster_index)))
     p.yaxis.major_label_overrides = {str(i): '#' + str(key) + '(' + str(i).rjust(3) + ')'
                                      for key, i in cluster_index.items() if i in range(0, len(cluster_index))}
@@ -247,9 +419,9 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     p.xgrid.grid_line_color = None
 
-    #p.title.text = "Cluster overview " #+ str(current_pos) + ' - ' + str(current_pos + 20) + ' of total (' + str(len(cluster_index)) + ')'
+    p.title.text = "Cluster overview for data = " + str(bed_file_name)
 
-    print(strftime("%Y-%m-%d %H:%M:%S ", localtime()), "Plotting figure.")
+    print(get_time(), "Plotting figure.")
 
     #show(p)
     #sys.exit()
@@ -259,11 +431,13 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     #########################
 
     def update_ticks(chrom, start, end):
+        print(get_time(), 'update_ticks')
         if chrom == 'All':
             # Ticks displayed
             p.xaxis.ticker = [translate_key[chrom] for chrom in chrom_order]
             p.xaxis.major_label_overrides = {translate_key[chrom]: chrom for chrom in chrom_order}
             p.xaxis.axis_label = None
+
         else:
             # Ticker setup
             window = end - start
@@ -272,13 +446,26 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
                                translate_key[chrom] + chrom_lens[chrom], step))
             tick_labels = list(range(0, chrom_lens[chrom], step))
 
+            # Limit tick window to visable range + one more window.
+            ticks__dict = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)
+                           if tick + window > start and tick - window < end}
+
             # Ticks displayed
-            p.xaxis.ticker = ticks
-            p.xaxis.major_label_overrides = {tick: '{:,}'.format(label) for tick, label in zip(ticks, tick_labels)}
+            p.xaxis.ticker = list(ticks__dict.keys())
+            p.xaxis.major_label_overrides = ticks__dict
             p.xaxis.axis_label = chrom
 
-        x_range_start.value = str(start)
-        x_range_end.value = str(end)
+            # if str(start - translate_key[chrom]) != x_range_start.value:
+            #     x_range_start.value = str(start - translate_key[chrom])
+            #
+            # if str(end - translate_key[chrom]) != x_range_end.value:
+            #     x_range_end.value = str(end - translate_key[chrom])
+
+            if start - translate_key[chrom] != int(float(x_range_start.value.replace(',', ''))):
+                x_range_start.value = '{:,}'.format(start - translate_key[chrom])
+
+            if end - translate_key[chrom] != int(float(x_range_end.value.replace(',', ''))):
+                x_range_end.value = '{:,}'.format(end - translate_key[chrom])
 
     #
     # Select from which index to display clusters.
@@ -286,8 +473,9 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     y_range_index = TextInput(value="0", title="Range index:")
 
     def update_y_range(attr, old, new):
+        print(get_time(), 'update_y_range')
         p.y_range.start = int(y_range_index.value) - 1
-        p.y_range.end = int(y_range_index.value) + 20
+        p.y_range.end = int(y_range_index.value) + visable_clusters
 
     y_range_index.on_change('value', update_y_range)
 
@@ -298,6 +486,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     chr_select = Select(value='All', title='Select chromosome', options=chr_options)
 
     def update_chr(attr, old, new):
+        print(get_time(), 'update_chr')
         if chr_select.value == 'All':
             # Range displayed
             p.x_range.start = 0
@@ -319,15 +508,45 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     x_range_end = TextInput(value=str(max_range), title='End x:')
 
     def update_x_range(attr, old, new):
-        if int(x_range_end.value) - int(x_range_start.value) > min_visable_range:
-            # Range displayed
-            p.x_range.start = int(float(x_range_start.value))
-            p.x_range.end = int(float(x_range_end.value))
+        print(get_time(), 'update_x_range')
 
+        start = int(float(x_range_start.value.replace(',', '')))
+        end = int(float(x_range_end.value.replace(',', '')))
+
+        if end - start > min_visable_range:
+            # Range displayed
             if chr_select.value != 'All':
+                if p.x_range.start != start + translate_key[chr_select.value]:
+                    p.x_range.start = start + translate_key[chr_select.value]
+
+                if p.x_range.end != end + translate_key[chr_select.value]:
+                    p.x_range.end = end + translate_key[chr_select.value]
+
                 update_ticks(chr_select.value, p.x_range.start, p.x_range.end)
+            else:
+                p.x_range.start = start
+                p.x_range.end = end
+
         else:
             print('Zoom in limit reached.')
+
+        # if int(float(x_range_end.value)) - int(float(x_range_start.value)) > min_visable_range:
+        #     # Range displayed
+        #     if chr_select.value != 'All':
+        #         if p.x_range.start != int(float(x_range_start.value)) + translate_key[chr_select.value]:
+        #             p.x_range.start = int(float(x_range_start.value))
+        #
+        #         if p.x_range.end != int(float(x_range_end.value)) + translate_key[chr_select.value]:
+        #             p.x_range.end = int(float(x_range_end.value))
+        #
+        #         update_ticks(chr_select.value, p.x_range.start, p.x_range.end)
+        #     else:
+        #         p.x_range.start = int(float(x_range_start.value))
+        #         p.x_range.end = int(float(x_range_end.value))
+        #
+        # else:
+        #     print('Zoom in limit reached.')
+
     x_range_start.on_change('value', update_x_range)
     x_range_end.on_change('value', update_x_range)
 
@@ -337,6 +556,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     zoom_in = Button(label='ZOOM IN', button_type='success')
 
     def update_zoom_in():
+        print(get_time(), 'update_zoom_in')
         diff = p.x_range.end - p.x_range.start
         if diff/2 > min_visable_range:
             p.x_range.start += int(float(diff/4))
@@ -353,6 +573,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     zoom_out = Button(label='ZOOM OUT', button_type='success')
 
     def update_zoom_out():
+        print(get_time(), 'update_zoom_out')
         diff = p.x_range.end - p.x_range.start
         chromosome = chr_select.value
 
@@ -386,7 +607,13 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 
     start_cluster = cluster_df_sorted[cluster_df_sorted.Index == 0].Cluster.values[0]
 
-    text = Paragraph(text=str(start_cluster), width=250, height=10)
+    text = Paragraph(text='CLUSTER: ' + str(start_cluster) +
+                          '. Frags = ' + str(cluster_info[cluster_info['Cluster'] == int(start_cluster)].Fragments.values[0]) +
+                          ' Chroms = ' + str(cluster_info[cluster_info['Cluster'] == int(start_cluster)].Chromosomes.values[0]),
+                     width=250, height=20)
+
+    print(cluster_info.sort_values(by='Chromosomes').head(5))
+    print(cluster_info.sort_values(by='Chromosomes').tail(5))
 
     cluster_data = cluster_df_sorted[cluster_df_sorted.Cluster == start_cluster]
 
@@ -402,8 +629,12 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
     cluster_select = TextInput(value=start_cluster, title='Cluster:', width=100)
 
     def update_cluster_info(attr, old, new):
+        print(get_time(), 'update_cluster_info')
+        print(cluster_info[cluster_info['Cluster'] == int(cluster_select.value)])
         if int(cluster_select.value) in cluster_index.keys():
-            text.text = 'Cluster: ' + cluster_select.value
+            text.text = 'CLUSTER: ' + cluster_select.value + \
+                        '. Frags = ' + str(cluster_info[cluster_info['Cluster'] == int(cluster_select.value)].Fragments.values[0]) + \
+                        ' Chroms = ' + str(cluster_info[cluster_info['Cluster'] == int(cluster_select.value)].Chromosomes.values[0])
             new_data = cluster_df_sorted[cluster_df_sorted.Cluster == cluster_select.value]
             cluster_source.data = {
                 'Chromosome': new_data.Chromosome,
@@ -428,7 +659,7 @@ def main(bed_file_name, genome_file_name, sort_cluster_type):
 #################
 
 # Genome file
-genome_file = 'data/hg38.genome'
+genome_file = '/Users/pontushojer/data_analysis/scripts/python_scripts/Cluster_viewer/data/hg38.genome'
 
 if not sys.argv[1]:
     # List available data files
@@ -450,16 +681,15 @@ else:
 print('CURRENT FILE = ', bed_file)
 
 
-# print('AVAILABLE SORT OPTIONS:')
-# print('-'*30)
-# options = ['Cluster', 'Fragments', 'Chromosomes', 'Phased_regions']
-# for nr, option in enumerate(options):
-#     print(nr, ':', option)
-# print('-'*30)
-#
-# option_index = int(input('Give selected sort option index:'))
-# sorting_type = options[option_index]
-sorting_type = 'Cluster'
+print('AVAILABLE SORT OPTIONS:')
+print('-'*30)
+options = ['Cluster', 'Fragments', 'Chromosomes', 'Phased_regions', 'Neighbour']
+for nr, option in enumerate(options):
+    print(nr, ':', option)
+print('-'*30)
+
+option_index = int(input('Give selected sort option index:'))
+sorting_type = options[option_index]
 
 # Start main program
 main(bed_file_name=bed_file, genome_file_name=genome_file, sort_cluster_type=sorting_type)
